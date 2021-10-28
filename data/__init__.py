@@ -13,6 +13,8 @@ See our template dataset class 'template_dataset.py' for more details.
 import importlib
 import torch.utils.data
 from data.base_dataset import BaseDataset
+import ipdb
+st = ipdb.set_trace
 
 
 def find_dataset_using_name(dataset_name):
@@ -73,6 +75,7 @@ class CustomDatasetDataLoader():
         Step 2: create a multi-threaded data loader.
         """
         self.opt = opt
+        # st()
         ret = find_dataset_using_name(opt.dataset_mode)
         self.collate_fn = None
         if type(ret) == tuple:

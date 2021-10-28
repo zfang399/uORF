@@ -6,11 +6,16 @@ import torch.nn.functional as F
 from .base_model import BaseModel
 from . import networks
 import os
+import ipdb
+st = ipdb.set_trace
 import time
+import numpy as np
 from .projection import Projection
 from torchvision.transforms import Normalize
-from .model import Encoder, Decoder, SlotAttention, get_perceptual_net, raw2outputs
+from .model import Encoder, Decoder, Decoder_woBkg, SlotAttention, SlotAttention_woBkg, get_perceptual_net, raw2outputs
+import cv2
 
+EPS = 1e-6
 
 class uorfNoGanModel(BaseModel):
 
@@ -47,6 +52,8 @@ class uorfNoGanModel(BaseModel):
         parser.add_argument('--coarse_epoch', type=int, default=600)
         parser.add_argument('--near_plane', type=float, default=6)
         parser.add_argument('--far_plane', type=float, default=20)
+        parser.add_argument('--learn_masked', action='store_true', help='operate on masked inputs')
+        parser.add_argument('--no_bkg', action='store_true', help='operate on masked inputs')        
         parser.add_argument('--fixed_locality', action='store_true', help='enforce locality in world space instead of transformed view space')
 
         parser.set_defaults(batch_size=1, lr=3e-4, niter_decay=0,
@@ -88,10 +95,19 @@ class uorfNoGanModel(BaseModel):
         self.num_slots = opt.num_slots
         self.netEncoder = networks.init_net(Encoder(3, z_dim=z_dim, bottom=opt.bottom),
                                             gpu_ids=self.gpu_ids, init_type='normal')
-        self.netSlotAttention = networks.init_net(
-            SlotAttention(num_slots=opt.num_slots, in_dim=z_dim, slot_dim=z_dim, iters=opt.attn_iter), gpu_ids=self.gpu_ids, init_type='normal')
-        self.netDecoder = networks.init_net(Decoder(n_freq=opt.n_freq, input_dim=6*opt.n_freq+3+z_dim, z_dim=opt.z_dim, n_layers=opt.n_layer,
-                                                    locality_ratio=opt.obj_scale/opt.nss_scale, fixed_locality=opt.fixed_locality), gpu_ids=self.gpu_ids, init_type='xavier')
+        if self.opt.no_bkg:
+            self.netSlotAttention = networks.init_net(
+                SlotAttention_woBkg(num_slots=opt.num_slots, in_dim=z_dim, slot_dim=z_dim, iters=opt.attn_iter), gpu_ids=self.gpu_ids, init_type='normal')            
+        else:
+            self.netSlotAttention = networks.init_net(
+                SlotAttention(num_slots=opt.num_slots, in_dim=z_dim, slot_dim=z_dim, iters=opt.attn_iter), gpu_ids=self.gpu_ids, init_type='normal')
+
+        if self.opt.no_bkg:
+            self.netDecoder = networks.init_net(Decoder_woBkg(n_freq=opt.n_freq, input_dim=6*opt.n_freq+3+z_dim, z_dim=opt.z_dim, n_layers=opt.n_layer,
+                                                        locality_ratio=opt.obj_scale/opt.nss_scale, fixed_locality=opt.fixed_locality), gpu_ids=self.gpu_ids, init_type='xavier')            
+        else:            
+            self.netDecoder = networks.init_net(Decoder(n_freq=opt.n_freq, input_dim=6*opt.n_freq+3+z_dim, z_dim=opt.z_dim, n_layers=opt.n_layer,
+                                                        locality_ratio=opt.obj_scale/opt.nss_scale, fixed_locality=opt.fixed_locality), gpu_ids=self.gpu_ids, init_type='xavier')
 
         if self.isTrain:  # only defined during training time
             self.optimizer = optim.Adam(chain(
@@ -100,6 +116,35 @@ class uorfNoGanModel(BaseModel):
             self.optimizers = [self.optimizer]
 
         self.L2_loss = nn.MSELoss()
+
+    def sql2_on_axis(self,x, axis, keepdim=True):
+        return torch.sum(x**2, axis, keepdim=keepdim)
+
+
+    def l1_on_axis(self, x, axis, keepdim=True):
+        return torch.sum(torch.abs(x), axis, keepdim=keepdim)
+
+    def l2_on_axis(self, x, axis, keepdim=True):
+        return torch.sqrt(EPS + self.sql2_on_axis(x, axis, keepdim=keepdim))
+
+    def reduce_masked_mean(self, x, mask, dim=None, keepdim=False):
+        # x and mask are the same shape
+        # returns shape-1
+        # axis can be a list of axes
+        # st()
+        # assert(x.size() == mask.size())
+        prod = x*mask
+        if dim is None:
+            numer = torch.sum(prod)
+            denom = EPS+torch.sum(mask)
+        
+        else:
+            numer = torch.sum(prod, dim=dim, keepdim=keepdim)
+            denom = EPS+torch.sum(mask, dim=dim, keepdim=keepdim)
+            
+        mean = numer/denom
+        return mean
+
 
     def setup(self, opt):
         """Load and print networks; create schedulers
@@ -119,6 +164,7 @@ class uorfNoGanModel(BaseModel):
         Parameters:
             input: a dictionary that contains the data itself and its metadata information.
         """
+        # st()
         self.x = input['img_data'].to(self.device)
         self.cam2world = input['cam2world'].to(self.device)
         if not self.opt.fixed_locality:
@@ -162,11 +208,15 @@ class uorfNoGanModel(BaseModel):
             x = self.x[:, :, H_idx:H_idx + rs, W_idx:W_idx + rs]
             self.z_vals, self.ray_dir = z_vals, ray_dir
 
-        sampling_coor_fg = frus_nss_coor[None, ...].expand(K - 1, -1, -1)  # (K-1)xPx3
-        sampling_coor_bg = frus_nss_coor  # Px3
+        if self.opt.no_bkg:
+            sampling_coor_fg = frus_nss_coor[None, ...].expand(K, -1, -1)  # (K-1)xPx3
+            raws, masked_raws, unmasked_raws, masks = self.netDecoder(sampling_coor_fg, z_slots, nss2cam0)  # (NxDxHxW)x4, Kx(NxDxHxW)x4, Kx(NxDxHxW)x4, Kx(NxDxHxW)x1
+        else:
+            sampling_coor_fg = frus_nss_coor[None, ...].expand(K - 1, -1, -1)  # (K-1)xPx3
+            sampling_coor_bg = frus_nss_coor  # Px3
+            raws, masked_raws, unmasked_raws, masks = self.netDecoder(sampling_coor_bg, sampling_coor_fg, z_slots, nss2cam0)  # (NxDxHxW)x4, Kx(NxDxHxW)x4, Kx(NxDxHxW)x4, Kx(NxDxHxW)x1
 
         W, H, D = self.opt.supervision_size, self.opt.supervision_size, self.opt.n_samp
-        raws, masked_raws, unmasked_raws, masks = self.netDecoder(sampling_coor_bg, sampling_coor_fg, z_slots, nss2cam0)  # (NxDxHxW)x4, Kx(NxDxHxW)x4, Kx(NxDxHxW)x4, Kx(NxDxHxW)x1
         raws = raws.view([N, D, H, W, 4]).permute([0, 2, 3, 1, 4]).flatten(start_dim=0, end_dim=2)  # (NxHxW)xDx4
         masked_raws = masked_raws.view([K, N, D, H, W, 4])
         unmasked_raws = unmasked_raws.view([K, N, D, H, W, 4])
@@ -174,8 +224,27 @@ class uorfNoGanModel(BaseModel):
         # (NxHxW)x3, (NxHxW)
         rendered = rgb_map.view(N, H, W, 3).permute([0, 3, 1, 2])  # Nx3xHxW
         x_recon = rendered * 2 - 1
+        # st()
+        if self.opt.learn_masked:
+            gt_mask_obj = (1.0 - (x.sum(1) == -3.).unsqueeze(1).float())
+            loss_im = self.l2_on_axis(x_recon - x, 1, keepdim=True)
+            # try:
+            if torch.sum(gt_mask_obj) < 1e-4:
+                weight = 1.0
+            else:
+                weight = torch.sum(1.0 - gt_mask_obj)/torch.sum(gt_mask_obj)
+            weighted_mask = (gt_mask_obj * weight)  + ((1.0 - gt_mask_obj))
+            loss_vis = (weighted_mask)[0].permute(1,2,0).detach().cpu().repeat(1,1,3).numpy().astype(np.uint8)
+            x_vis = ((x +1.0)*127.0)[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
+            # st()
+            cv2.imwrite('image_weight.jpg',loss_vis)
+            cv2.imwrite('image_x.jpg',x_vis)
+            # st()
+            # self.loss_vis = loss_im *weighted_mask
+            self.loss_recon = self.reduce_masked_mean(loss_im, weighted_mask)
+        else:
+            self.loss_recon = self.L2_loss(x_recon, x)
 
-        self.loss_recon = self.L2_loss(x_recon, x)
         x_norm, rendered_norm = self.vgg_norm((x + 1) / 2), self.vgg_norm(rendered)
         rendered_feat, x_feat = self.perceptual_net(rendered_norm), self.perceptual_net(x_norm)
         self.loss_perc = self.weight_percept * self.L2_loss(rendered_feat, x_feat)
@@ -183,6 +252,7 @@ class uorfNoGanModel(BaseModel):
         with torch.no_grad():
             attn = attn.detach().cpu()  # KxN
             H_, W_ = feature_map.shape[2], feature_map.shape[3]
+            # st()
             attn = attn.view(self.opt.num_slots, 1, H_, W_)
             if H_ != H:
                 attn = F.interpolate(attn, size=[H, W], mode='bilinear')

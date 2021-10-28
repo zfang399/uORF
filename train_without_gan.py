@@ -1,9 +1,11 @@
 import time
+import ipdb
 from options.train_options import TrainOptions
 from data import create_dataset
 from models import create_model
 from util.visualizer import Visualizer
 from util.util import AverageMeter, set_seed
+st = ipdb.set_trace
 
 
 if __name__ == '__main__':
@@ -35,6 +37,7 @@ if __name__ == '__main__':
             visualizer.reset()
             total_iters += opt.batch_size
             epoch_iter += opt.batch_size
+            # st()
             model.set_input(data)         # unpack data from dataset and apply preprocessing
             layers, avg_grad = model.optimize_parameters(opt.display_grad, epoch)   # calculate loss functions, get gradients, update network weights
             if opt.custom_lr and opt.stage == 'coarse':
@@ -51,6 +54,7 @@ if __name__ == '__main__':
             for loss_name in model.loss_names:
                 meters_trn[loss_name].update(float(losses[loss_name]))
                 losses[loss_name] = meters_trn[loss_name].avg
+
             if total_iters % opt.print_freq == 0:    # print training losses and save logging information to the disk
                 t_comp = (time.time() - iter_start_time) / opt.batch_size
                 visualizer.print_current_losses(epoch, epoch_iter, losses, t_comp, t_data)
