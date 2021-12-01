@@ -2,6 +2,8 @@ import os
 import torch
 from collections import OrderedDict
 from abc import ABC, abstractmethod
+import ipdb
+st = ipdb.set_trace
 from . import networks
 import time
 
@@ -35,6 +37,7 @@ class BaseModel(ABC):
         self.isTrain = opt.isTrain
         self.device = torch.device('cuda:{}'.format(self.gpu_ids[0])) if self.gpu_ids else torch.device('cpu')  # get device name: CPU or GPU
         self.save_dir = os.path.join(opt.checkpoints_dir, opt.name, opt.exp_id)  # save all the checkpoints to save_dir
+        self.load_dir = os.path.join(opt.checkpoints_dir, opt.name, opt.continue_train)  # save all the checkpoints to save_dir
         self.loss_names = []
         self.model_names = []
         self.visual_names = []
@@ -139,6 +142,14 @@ class BaseModel(ABC):
                 errors_ret[name] = float(getattr(self, 'loss_' + name))  # float(...) works for both scalar tensor and float number
         return errors_ret
 
+    def get_current_accuracy(self):
+        """Return traning losses / errors. train.py will print out these errors on console, and save them to a file"""
+        acc_ret = OrderedDict()
+        for name in self.acc_names:
+            if isinstance(name, str):
+                acc_ret[name] = float(getattr(self, 'acc_' + name))  # float(...) works for both scalar tensor and float number
+        return acc_ret
+
     def save_networks(self, epoch):
         """Save all the networks to the disk.
 
@@ -149,6 +160,7 @@ class BaseModel(ABC):
             if isinstance(name, str):
                 save_filename = '%s_net_%s.pth' % (epoch, name)
                 save_path = os.path.join(self.save_dir, save_filename)
+                # st()
                 net = getattr(self, 'net' + name)
 
                 if len(self.gpu_ids) > 0 and torch.cuda.is_available():
@@ -180,10 +192,12 @@ class BaseModel(ABC):
         Parameters:
             epoch (int) -- current epoch; used in the file name '%s_net_%s.pth' % (epoch, name)
         """
+        # st()
         for name in self.model_names:
             if isinstance(name, str):
                 load_filename = '%s_net_%s.pth' % (epoch, name)
-                load_path = os.path.join(self.save_dir, load_filename)
+                load_path = os.path.join(self.load_dir, load_filename)
+                # st()
                 net = getattr(self, 'net' + name)
                 if isinstance(net, torch.nn.DataParallel):
                     net = net.module
@@ -191,6 +205,7 @@ class BaseModel(ABC):
                     print('loading the model from %s' % load_path)
                     # if you are using PyTorch newer than 0.4 (e.g., built from
                     # GitHub source), you can remove str() on self.device
+                    # st()
                     state_dict = torch.load(load_path, map_location=self.device)
                     if hasattr(state_dict, '_metadata'):
                         del state_dict._metadata

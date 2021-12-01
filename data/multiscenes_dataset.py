@@ -18,12 +18,14 @@ class MultiscenesDataset(BaseDataset):
     def modify_commandline_options(parser, is_train):
         parser.set_defaults(input_nc=3, output_nc=3)
         parser.add_argument('--n_scenes', type=int, default=1000, help='dataset length is #scenes')
+        parser.add_argument('--change_idx_after', type=int, default=-1, help='dataset length is #scenes')
         parser.add_argument('--n_img_each_scene', type=int, default=10, help='for each scene, how many images to load in a batch')
         parser.add_argument('--no_shuffle', action='store_true')
-        parser.add_argument('--mask_size', type=int, default=128)
+        parser.add_argument('--mask_size', type=int, default=64)
         parser.add_argument('--no_mask', action='store_true')
         parser.add_argument('--overfit', action='store_true')
         parser.add_argument('--masked_dataset', action='store_true')
+        parser.add_argument('--use_mask_diff', action='store_true')
         return parser
 
     def __init__(self, opt):
@@ -66,9 +68,11 @@ class MultiscenesDataset(BaseDataset):
                         scene_filenames.append(x)
                 if len(scene_filenames) >= self.n_img_each_scene:
                     self.scenes.append(scene_filenames)
+            # st()
             pickle.dump(self.scenes,open(scene_path,"wb"))
         # st()
         # self.scenes = self.scenes[:3]
+        self.count = -1
 
         # st()
 
@@ -90,8 +94,17 @@ class MultiscenesDataset(BaseDataset):
         Parameters:
             index - - a random integer for data indexing, here it is scene_idx
         """
+        self.count += 1
+        # print(self.count)
+        # st()
         if self.opt.overfit:
             index = 0
+
+        if self.opt.change_idx_after != -1:
+            index = self.count//self.opt.change_idx_after
+            print("this is the new index",index)
+        
+
         scene_idx = index
         scene_filenames = self.scenes[scene_idx]
         # st()
@@ -99,7 +112,9 @@ class MultiscenesDataset(BaseDataset):
             filenames = random.sample(scene_filenames, self.n_img_each_scene)
         else:
             filenames = scene_filenames[:self.n_img_each_scene]
+        
         rets = []
+
         for path in filenames:
             # if self.opt.masked_rgb:    
             #     path = path.replace(".png","_masked.png")
@@ -129,26 +144,32 @@ class MultiscenesDataset(BaseDataset):
             if not self.opt.no_mask:
                 mask_path = path.replace('.png', '_mask.png')
                 if os.path.isfile(mask_path):
-                    mask = Image.open(mask_path).convert('RGB')
-                    mask_l = mask.convert('L')
-                    mask = self._transform_mask(mask)
-                    ret['mask'] = mask
-                    mask_l = self._transform_mask(mask_l)
-                    mask_flat = mask_l.flatten(start_dim=0)  # HW,
-                    greyscale_dict = mask_flat.unique(sorted=True)  # 8,
-                    onehot_labels = mask_flat[:, None] == greyscale_dict  # HWx8, one-hot
-                    onehot_labels = onehot_labels.type(torch.uint8)
-                    mask_idx = onehot_labels.argmax(dim=1)  # HW
-                    bg_color = greyscale_dict[1]
-                    fg_idx = mask_flat != bg_color  # HW
-                    ret['mask_idx'] = mask_idx
-                    ret['fg_idx'] = fg_idx
-                    obj_idxs = []
-                    for i in range(len(greyscale_dict)):
-                        obj_idx = mask_l == greyscale_dict[i]  # 1xHxW
-                        obj_idxs.append(obj_idx)
-                    obj_idxs = torch.stack(obj_idxs)  # Kx1xHxW
-                    ret['obj_idxs'] = obj_idxs  # KxHxW
+                    if self.opt.use_mask_diff:
+                        mask = Image.open(mask_path).convert('RGB')
+                        mask_l = mask.convert('L')
+                        mask = self._transform_mask(mask)
+                        ret['mask'] = mask                        
+                    else:
+                        mask = Image.open(mask_path).convert('RGB')
+                        mask_l = mask.convert('L')
+                        mask = self._transform_mask(mask)
+                        ret['mask'] = mask
+                        mask_l = self._transform_mask(mask_l)
+                        mask_flat = mask_l.flatten(start_dim=0)  # HW,
+                        greyscale_dict = mask_flat.unique(sorted=True)  # 8,
+                        onehot_labels = mask_flat[:, None] == greyscale_dict  # HWx8, one-hot
+                        onehot_labels = onehot_labels.type(torch.uint8)
+                        mask_idx = onehot_labels.argmax(dim=1)  # HW
+                        bg_color = greyscale_dict[1]
+                        fg_idx = mask_flat != bg_color  # HW
+                        ret['mask_idx'] = mask_idx
+                        ret['fg_idx'] = fg_idx
+                        obj_idxs = []
+                        for i in range(len(greyscale_dict)):
+                            obj_idx = mask_l == greyscale_dict[i]  # 1xHxW
+                            obj_idxs.append(obj_idx)
+                        obj_idxs = torch.stack(obj_idxs)  # Kx1xHxW
+                        ret['obj_idxs'] = obj_idxs  # KxHxW
             rets.append(ret)
         return rets
 

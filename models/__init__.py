@@ -20,6 +20,8 @@ See our template model class 'template_model.py' for more details.
 
 import importlib
 from models.base_model import BaseModel
+import ipdb
+st = ipdb.set_trace
 
 
 def find_model_using_name(model_name):
@@ -62,6 +64,7 @@ def create_model(opt):
         >>> model = create_model(opt)
     """
     model = find_model_using_name(opt.model)
+    # st()
     instance = model(opt)
     print("model [%s] was created" % type(instance).__name__)
     return instance

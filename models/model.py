@@ -51,6 +51,8 @@ class Encoder(nn.Module):
         pixel_emb = torch.stack([x1_m, x2_m, y1_m, y2_m]).to(x.device).unsqueeze(0)  # 1x4xHxW
         x_ = torch.cat([x, pixel_emb], dim=1)
 
+        # st()
+
         if self.bottom:
             x_down_0 = self.enc_down_0(x_)
             x_down_1 = self.enc_down_1(x_down_0)
@@ -116,7 +118,7 @@ class Decoder(nn.Module):
             z_slots: KxC, K: #slots, C: #feat_dim
             fg_transform: If self.fixed_locality, it is 1x4x4 matrix nss2cam0, otherwise it is 1x3x3 azimuth rotation of nss2cam0
         """
-        st()
+        # st()
         K, C = z_slots.shape
         P = sampling_coor_bg.shape[0]
 

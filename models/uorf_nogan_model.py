@@ -8,6 +8,8 @@ from . import networks
 import os
 import ipdb
 st = ipdb.set_trace
+from util.util import AverageMeter
+from sklearn.metrics import adjusted_rand_score
 import time
 import numpy as np
 from .projection import Projection
@@ -54,7 +56,9 @@ class uorfNoGanModel(BaseModel):
         parser.add_argument('--far_plane', type=float, default=20)
         parser.add_argument('--learn_masked', action='store_true', help='operate on masked inputs')
         parser.add_argument('--no_bkg', action='store_true', help='operate on masked inputs')        
+        parser.add_argument('--freeze_decoder', action='store_true', help='operate on masked inputs')        
         parser.add_argument('--fixed_locality', action='store_true', help='enforce locality in world space instead of transformed view space')
+        parser.add_argument('--train_autoencode', action='store_true', help='enforce locality in world space instead of transformed view space')
 
         parser.set_defaults(batch_size=1, lr=3e-4, niter_decay=0,
                             dataset_mode='multiscenes', niter=1200, custom_lr=True, lr_policy='warmup')
@@ -74,13 +78,31 @@ class uorfNoGanModel(BaseModel):
         - define loss function, visualization images, model names, and optimizers
         """
         BaseModel.__init__(self, opt)  # call the initialization method of BaseModel
-        self.loss_names = ['recon', 'perc']
+
+        if opt.no_mask:
+            self.loss_names = ['recon', 'perc']
+        else:
+            self.loss_names = ['recon', 'perc', 'ari', 'fgari', 'nvari']
+
+        # self.loss_names = ['ari', 'fgari', 'nvari']
+
         n = opt.n_img_each_scene
-        self.visual_names = ['x{}'.format(i) for i in range(n)] + \
-                            ['x_rec{}'.format(i) for i in range(n)] + \
-                            ['slot{}_view{}'.format(k, i) for k in range(opt.num_slots) for i in range(n)] + \
-                            ['unmasked_slot{}_view{}'.format(k, i) for k in range(opt.num_slots) for i in range(n)] + \
-                            ['slot{}_attn'.format(k) for k in range(opt.num_slots)]
+        if opt.no_mask:
+            self.visual_names = ['x{}'.format(i) for i in range(n)] + \
+                                ['x_rec{}'.format(i) for i in range(n)] + \
+                                ['slot{}_view{}'.format(k, i) for k in range(opt.num_slots) for i in range(n)] + \
+                                ['unmasked_slot{}_view{}'.format(k, i) for k in range(opt.num_slots) for i in range(n)] + \
+                                ['slot{}_attn'.format(k) for k in range(opt.num_slots)]
+        else:
+            self.visual_names = ['x{}'.format(i) for i in range(n)] + \
+                                ['x_rec{}'.format(i) for i in range(n)] + \
+                                ['slot{}_view{}'.format(k, i) for k in range(opt.num_slots) for i in range(n)] + \
+                                ['unmasked_slot{}_view{}'.format(k, i) for k in range(opt.num_slots) for i in range(n)] + \
+                                ['slot{}_attn'.format(k) for k in range(opt.num_slots)] + \
+                                ['gt_mask{}'.format(i) for i in range(n)] + \
+                                ['render_mask{}'.format(i) for i in range(n)]
+        # st()
+
         self.model_names = ['Encoder', 'SlotAttention', 'Decoder']
         self.perceptual_net = get_perceptual_net().cuda()
         self.vgg_norm = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -108,7 +130,11 @@ class uorfNoGanModel(BaseModel):
         else:            
             self.netDecoder = networks.init_net(Decoder(n_freq=opt.n_freq, input_dim=6*opt.n_freq+3+z_dim, z_dim=opt.z_dim, n_layers=opt.n_layer,
                                                         locality_ratio=opt.obj_scale/opt.nss_scale, fixed_locality=opt.fixed_locality), gpu_ids=self.gpu_ids, init_type='xavier')
-
+        # st()
+        if opt.freeze_decoder:
+            self.netDecoder.eval()
+            self.set_requires_grad(self.netDecoder, False)
+            
         if self.isTrain:  # only defined during training time
             self.optimizer = optim.Adam(chain(
                 self.netEncoder.parameters(), self.netSlotAttention.parameters(), self.netDecoder.parameters()
@@ -116,6 +142,14 @@ class uorfNoGanModel(BaseModel):
             self.optimizers = [self.optimizer]
 
         self.L2_loss = nn.MSELoss()
+
+    def set_requires_grad(self, nets, requires_grad=False):
+        if not isinstance(nets, list):
+            nets = [nets]
+        for net in nets:
+            if net is not None:
+                for param in net.parameters():
+                    param.requires_grad = requires_grad
 
     def sql2_on_axis(self,x, axis, keepdim=True):
         return torch.sum(x**2, axis, keepdim=keepdim)
@@ -155,6 +189,7 @@ class uorfNoGanModel(BaseModel):
             self.schedulers = [networks.get_scheduler(optimizer, opt) for optimizer in self.optimizers]
         if not self.isTrain or opt.continue_train:
             load_suffix = 'iter_{}'.format(opt.load_iter) if opt.load_iter > 0 else opt.epoch
+            # st()
             self.load_networks(load_suffix)
         self.print_networks(opt.verbose)
 
@@ -170,14 +205,24 @@ class uorfNoGanModel(BaseModel):
         if not self.opt.fixed_locality:
             self.cam2world_azi = input['azi_rot'].to(self.device)
 
+        if 'masks' in input:
+            self.gt_masks = input['masks']
+            self.mask_idx = input['mask_idx']
+            self.fg_idx = input['fg_idx']
+            self.obj_idxs = input['obj_idxs']  # NxKxHxW
+
+
     def forward(self, epoch=0):
         """Run forward pass. This will be called by both functions <optimize_parameters> and <test>."""
-        self.weight_percept = self.opt.weight_percept if epoch >= self.opt.percept_in else 0
+        if not self.opt.no_mask:
+            self.weight_percept = 0.0
+        else:
+            self.weight_percept = self.opt.weight_percept if epoch >= self.opt.percept_in else 0
         self.loss_recon = 0
         self.loss_perc = 0
         dev = self.x[0:1].device
         nss2cam0 = self.cam2world[0:1].inverse() if self.opt.fixed_locality else self.cam2world_azi[0:1].inverse()
-
+        # st()
         # Encoding images
         feature_map = self.netEncoder(F.interpolate(self.x[0:1], size=self.opt.input_size, mode='bilinear', align_corners=False))  # BxCxHxW
         feat = feature_map.flatten(start_dim=2).permute([0, 2, 1])  # BxNxC
@@ -189,6 +234,7 @@ class uorfNoGanModel(BaseModel):
 
         cam2world = self.cam2world
         N = cam2world.shape[0]
+
         if self.opt.stage == 'coarse':
             frus_nss_coor, z_vals, ray_dir = self.projection.construct_sampling_coor(cam2world)
             # (NxDxHxW)x3, (NxHxW)xD, (NxHxW)x3
@@ -239,11 +285,15 @@ class uorfNoGanModel(BaseModel):
             # st()
             cv2.imwrite('image_weight.jpg',loss_vis)
             cv2.imwrite('image_x.jpg',x_vis)
-            # st()
             # self.loss_vis = loss_im *weighted_mask
             self.loss_recon = self.reduce_masked_mean(loss_im, weighted_mask)
         else:
-            self.loss_recon = self.L2_loss(x_recon, x)
+            # st()
+            # st()
+            if not self.opt.no_mask:
+                self.loss_recon = self.L2_loss(x_recon[:1], x[:1])
+            else:
+                self.loss_recon = self.L2_loss(x_recon, x)
 
         x_norm, rendered_norm = self.vgg_norm((x + 1) / 2), self.vgg_norm(rendered)
         rendered_feat, x_feat = self.perceptual_net(rendered_norm), self.perceptual_net(x_norm)
@@ -268,11 +318,18 @@ class uorfNoGanModel(BaseModel):
             _, N, D, H, W, _ = self.masked_raws.shape
             masked_raws = self.masked_raws  # KxNxDxHxWx4
             unmasked_raws = self.unmasked_raws  # KxNxDxHxWx4
+            mask_maps = []
             for k in range(self.num_slots):
                 raws = masked_raws[k]  # NxDxHxWx4
                 z_vals, ray_dir = self.z_vals, self.ray_dir
                 raws = raws.permute([0, 2, 3, 1, 4]).flatten(start_dim=0, end_dim=2)  # (NxHxW)xDx4
-                rgb_map, depth_map, _ = raw2outputs(raws, z_vals, ray_dir)
+                
+                if self.opt.no_mask:
+                    rgb_map, depth_map, _ = raw2outputs(raws, z_vals, ray_dir)
+                else:
+                    rgb_map, depth_map, _, mask_map = raw2outputs(raws, z_vals, ray_dir,render_mask = True)
+                    mask_maps.append(mask_map.view(N, H, W))
+
                 rendered = rgb_map.view(N, H, W, 3).permute([0, 3, 1, 2])  # Nx3xHxW
                 x_recon = rendered * 2 - 1
                 for i in range(self.opt.n_img_each_scene):
@@ -287,6 +344,67 @@ class uorfNoGanModel(BaseModel):
                     setattr(self, 'unmasked_slot{}_view{}'.format(k, i), x_recon[i])
 
                 setattr(self, 'slot{}_attn'.format(k), self.attn[k] * 2 - 1)
+
+            if not self.opt.no_mask:
+                mask_maps = torch.stack(mask_maps)  # KxNxDxHxWx4
+                mask_idx = mask_maps.cpu().argmax(dim=0)  # NxHxW
+
+                # st()
+
+                predefined_colors = []
+                obj_idxs = self.obj_idxs  # Kx1xHxW
+                gt_mask0 = self.gt_masks[0]  # 3xHxW
+                for k in range(self.num_slots):
+                    mask_idx_this_slot = mask_idx[0:1] == k  # 1xHxW
+                    iou_this_slot = []
+                    for kk in range(self.num_slots):
+                        try:
+                            obj_idx = obj_idxs[kk, ...]  # 1xHxW
+                        except IndexError:
+                            break
+                        # st()
+                        iou = (obj_idx & mask_idx_this_slot).type(torch.float).sum() / (obj_idx | mask_idx_this_slot).type(torch.float).sum()
+                        iou_this_slot.append(iou)
+                    target_obj_number = torch.tensor(iou_this_slot).argmax()
+                    target_obj_idx = obj_idxs[target_obj_number, ...].squeeze()  # HxW
+                    obj_first_pixel_pos = target_obj_idx.nonzero()[0]  # 2
+                    obj_color = gt_mask0[:, obj_first_pixel_pos[0], obj_first_pixel_pos[1]]
+                    predefined_colors.append(obj_color)
+                predefined_colors = torch.stack(predefined_colors).permute([1,0])
+                mask_visuals = predefined_colors[:, mask_idx]  # 3xNxHxW
+
+                nvari_meter = AverageMeter()
+                for i in range(N):
+                    setattr(self, 'render_mask{}'.format(i), mask_visuals[:, i, ...])
+                    setattr(self, 'gt_mask{}'.format(i), self.gt_masks[i])
+
+                    this_mask_idx = mask_idx[i].flatten(start_dim=0)
+                    gt_mask_idx = self.mask_idx[i]  # HW
+                    fg_idx = self.fg_idx[i]
+                    fg_idx_map = fg_idx.view([self.opt.frustum_size, self.opt.frustum_size])[None, ...]
+
+                    fg_map = mask_visuals[0:1, i, ...].clone()
+                    fg_map[fg_idx_map] = -1.
+                    fg_map[~fg_idx_map] = 1.                    
+                    setattr(self, 'bg_map{}'.format(i), fg_map)
+
+                    if i == 0:
+                        ari_score = adjusted_rand_score(gt_mask_idx, this_mask_idx)
+                        fg_ari = adjusted_rand_score(gt_mask_idx[fg_idx], this_mask_idx[fg_idx])
+                        self.loss_ari = ari_score
+                        self.loss_fgari = fg_ari
+                    else:
+                        ari_score = adjusted_rand_score(gt_mask_idx, this_mask_idx)
+                        nvari_meter.update(ari_score)
+                    self.loss_nvari = nvari_meter.val                    
+                # st()
+                print(f"Different views ari: {self.loss_nvari}")
+                print(f"Same view ari: {self.loss_ari}")
+                print(f"Same view fg ari: {self.loss_fgari}")
+
+
+
+
 
     def backward(self):
         """Calculate losses, gradients, and update network weights; called in every training iteration"""
@@ -336,21 +454,24 @@ class uorfNoGanModel(BaseModel):
             surfix (int or str) -- current epoch; used in he file name '%s_net_%s.pth' % (epoch, name)
         """
         super().load_networks(surfix)
+        # st()
 
         if self.isTrain:
             for i, opm in enumerate(self.optimizers):
                 load_filename = '{}_optimizer_{}.pth'.format(surfix, i)
                 load_path = os.path.join(self.save_dir, load_filename)
-                print('loading the optimizer from %s' % load_path)
-                state_dict = torch.load(load_path, map_location=str(self.device))
-                opm.load_state_dict(state_dict)
+                if os.path.exists(load_path):
+                    print('loading the optimizer from %s' % load_path)
+                    state_dict = torch.load(load_path, map_location=str(self.device))
+                    opm.load_state_dict(state_dict)
 
             for i, sch in enumerate(self.schedulers):
                 load_filename = '{}_lr_scheduler_{}.pth'.format(surfix, i)
                 load_path = os.path.join(self.save_dir, load_filename)
-                print('loading the lr scheduler from %s' % load_path)
-                state_dict = torch.load(load_path, map_location=str(self.device))
-                sch.load_state_dict(state_dict)
+                if os.path.exists(load_path):
+                    print('loading the lr scheduler from %s' % load_path)
+                    state_dict = torch.load(load_path, map_location=str(self.device))
+                    sch.load_state_dict(state_dict)
 
 
 if __name__ == '__main__':

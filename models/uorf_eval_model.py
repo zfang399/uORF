@@ -13,6 +13,8 @@ from sklearn.metrics import adjusted_rand_score
 import lpips
 from piq import ssim as compute_ssim
 from piq import psnr as compute_psnr
+import ipdb
+st = ipdb.set_trace
 
 
 class uorfEvalModel(BaseModel):
@@ -63,6 +65,7 @@ class uorfEvalModel(BaseModel):
         """
         BaseModel.__init__(self, opt)  # call the initialization method of BaseModel
         self.loss_names = ['ari', 'fgari', 'nvari', 'psnr', 'ssim', 'lpips']
+        # st()
         n = opt.n_img_each_scene
         self.visual_names = ['input_image',] + ['gt_novel_view{}'.format(i+1) for i in range(n-1)] + \
                             ['x_rec{}'.format(i) for i in range(n)] + \
@@ -107,6 +110,7 @@ class uorfEvalModel(BaseModel):
         if not self.opt.fixed_locality:
             self.cam2world_azi = input['azi_rot'].to(self.device)
         self.image_paths = input['paths']
+        
         if 'masks' in input:
             self.gt_masks = input['masks']
             self.mask_idx = input['mask_idx']
@@ -115,6 +119,7 @@ class uorfEvalModel(BaseModel):
 
     def forward(self, epoch=0):
         """Run forward pass. This will be called by both functions <optimize_parameters> and <test>."""
+        # st()
         dev = self.x[0:1].device
         nss2cam0 = self.cam2world[0:1].inverse() if self.opt.fixed_locality else self.cam2world_azi[0:1].inverse()
 
@@ -174,6 +179,7 @@ class uorfEvalModel(BaseModel):
 
     def compute_visuals(self):
         with torch.no_grad():
+            # st()
             cam2world = self.cam2world[:self.opt.n_img_each_scene]
             _, N, D, H, W, _ = self.masked_raws.shape
             masked_raws = self.masked_raws  # KxNxDxHxWx4
@@ -214,6 +220,7 @@ class uorfEvalModel(BaseModel):
 
             nvari_meter = AverageMeter()
             for i in range(N):
+                # st()
                 setattr(self, 'render_mask{}'.format(i), mask_visuals[:, i, ...])
                 setattr(self, 'gt_mask{}'.format(i), self.gt_masks[i])
                 this_mask_idx = mask_idx[i].flatten(start_dim=0)
@@ -223,6 +230,7 @@ class uorfEvalModel(BaseModel):
                 fg_map = mask_visuals[0:1, i, ...].clone()
                 fg_map[fg_idx_map] = -1.
                 fg_map[~fg_idx_map] = 1.
+                # st()
                 setattr(self, 'bg_map{}'.format(i), fg_map)
                 if i == 0:
                     ari_score = adjusted_rand_score(gt_mask_idx, this_mask_idx)

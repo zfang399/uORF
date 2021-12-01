@@ -1,6 +1,8 @@
 from options.test_options import TestOptions
 from data import create_dataset
 from models import create_model
+import ipdb
+st = ipdb.set_trace
 from util.visualizer import Visualizer, save_images
 from util.html import HTML
 import os
@@ -15,6 +17,7 @@ if __name__ == '__main__':
     opt.serial_batches = True  # disable data shuffling; comment this line if results on randomly chosen images are needed.
     dataset = create_dataset(opt)  # create a dataset given opt.dataset_mode and other options
     model = create_model(opt)      # create a model given opt.model and other options
+    # st()
     model.setup(opt)               # regular setup: load and print networks; create schedulers
     visualizer = Visualizer(opt)  # create a visualizer that display/save images and plots
     meters_tst = {stat: AverageMeter() for stat in model.loss_names}
@@ -29,6 +32,7 @@ if __name__ == '__main__':
     for i, data in enumerate(dataset):
         visualizer.reset()
         model.set_input(data)  # unpack data from data loader
+        # st()
         model.test()           # run inference: forward + compute_visuals
 
         losses = model.get_current_losses()

@@ -1,0 +1,1 @@
+rsync -avtu --exclude="log*" --exclude="dump_tensor/*" --exclude="tmp" --exclude="offline_cluster" --exclude="cuda_ops*" --exclude="dump" --exclude="cuda_ops*"  --exclude="checkpoints" --exclude="__py**" --exclude="offline_obj_cluster" ./*  cmu:/home/mprabhud/phd_projects/uorf/
