@@ -24,7 +24,7 @@ python train_without_gan.py --dataroot $DATAROOT --n_scenes 17999 --n_img_each_s
     --checkpoints_dir 'checkpoints' --name 'room_diverse' \
     --display_port $PORT --display_ncols 4 --print_freq 200 --display_freq 200 --display_grad \
     --load_size 128 --n_samp 64 --input_size 64 --supervision_size 64 --coarse_epoch 600 --z_dim 64 \
-    --num_slots 9 --no_mask --display_env $exp_name  --exp_id $exp_name --bottom --save_by_iter\
+    --num_slots 10 --no_mask --display_env $exp_name  --exp_id $exp_name --bottom --save_by_iter --freeze_decoder\
     --model 'uorf_nogan' \
 
 # slow inference

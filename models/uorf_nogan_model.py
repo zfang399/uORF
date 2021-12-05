@@ -233,7 +233,7 @@ class uorfNoGanModel(BaseModel):
         K = attn.shape[0]
 
         cam2world = self.cam2world
-        st()
+        # st()
         N = cam2world.shape[0]
         if self.opt.stage == 'coarse':
             frus_nss_coor, z_vals, ray_dir = self.projection.construct_sampling_coor(cam2world)
@@ -253,6 +253,8 @@ class uorfNoGanModel(BaseModel):
             frus_nss_coor, z_vals, ray_dir = frus_nss_coor_.flatten(0, 3), z_vals_.flatten(0, 2), ray_dir_.flatten(0, 2)
             x = self.x[:, :, H_idx:H_idx + rs, W_idx:W_idx + rs]
             self.z_vals, self.ray_dir = z_vals, ray_dir
+        
+        # st()
 
         if self.opt.no_bkg:
             sampling_coor_fg = frus_nss_coor[None, ...].expand(K, -1, -1)  # (K-1)xPx3
@@ -262,7 +264,6 @@ class uorfNoGanModel(BaseModel):
             sampling_coor_bg = frus_nss_coor  # Px3
             raws, masked_raws, unmasked_raws, masks = self.netDecoder(sampling_coor_bg, sampling_coor_fg, z_slots, nss2cam0)  # (NxDxHxW)x4, Kx(NxDxHxW)x4, Kx(NxDxHxW)x4, Kx(NxDxHxW)x1
 
-        st()
         W, H, D = self.opt.supervision_size, self.opt.supervision_size, self.opt.n_samp
         raws = raws.view([N, D, H, W, 4]).permute([0, 2, 3, 1, 4]).flatten(start_dim=0, end_dim=2)  # (NxHxW)xDx4
         masked_raws = masked_raws.view([K, N, D, H, W, 4])
