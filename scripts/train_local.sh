@@ -32,7 +32,7 @@ python -m visdom.server -p $PORT &>/dev/null &
 ## primitive training
 
 DATAROOT=../uorf_data_gen/image_generation/rendered_images/new_clevr
-python train_without_gan.py --dataroot $DATAROOT --n_scenes 17999 --n_img_each_scene 4  \
+python train_without_gan.py --dataroot $DATAROOT --n_scenes 17999 --n_img_each_scene 3  \
     --checkpoints_dir 'checkpoints' --name 'clevr_567' \
     --display_port $PORT --display_ncols 4 --print_freq 2 --display_freq 2 --display_grad \
     --load_size 128 --n_samp 64 --input_size 64 --supervision_size 64 --coarse_epoch 600 --z_dim 40 \
@@ -43,3 +43,11 @@ python train_without_gan.py --dataroot $DATAROOT --n_scenes 17999 --n_img_each_s
 echo "Done"
 
 
+# ipdb> rendered.shape
+# torch.Size([4, 3, 64, 64])
+# ipdb> z_slots.shape
+# torch.Size([2, 40])
+# ipdb> nss2cam0.shape
+# torch.Size([1, 3, 3])
+# ipdb> sampling_coor_fg.shape
+# torch.Size([1, 1048576, 3])

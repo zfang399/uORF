@@ -25,15 +25,15 @@ if __name__ == '__main__':
     set_seed(opt.seed)
 
     web_dir = os.path.join(opt.results_dir, opt.name,
-                           '{}_{}'.format(opt.testset_name, opt.epoch))  # define the website directory
+                           '{}_{}'.format(opt.exp_id, opt.epoch))  # define the website directory
     print('creating web directory', web_dir)
     webpage = HTML(web_dir, 'Experiment = %s, Phase = %s, Epoch = %s' % (opt.name, opt.phase, opt.epoch))
 
     for i, data in enumerate(dataset):
         visualizer.reset()
         model.set_input(data)  # unpack data from data loader
-        # st()
         model.test()           # run inference: forward + compute_visuals
+        # st()
 
         losses = model.get_current_losses()
         visualizer.print_test_losses(i, losses)

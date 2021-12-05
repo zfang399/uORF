@@ -71,6 +71,12 @@ class uorfEvalModel(BaseModel):
                             ['x_rec{}'.format(i) for i in range(n)] + \
                             ['gt_mask{}'.format(i) for i in range(n)] + \
                             ['render_mask{}'.format(i) for i in range(n)]
+        for k in range(opt.num_slots):
+            for i in range(opt.n_img_each_scene):
+                visual_name = 'slot{}_view{}'.format(k, i)
+                self.visual_names.append(visual_name)
+        # st()
+
         self.model_names = ['Encoder', 'SlotAttention', 'Decoder']
         render_size = (opt.render_size, opt.render_size)
         frustum_size = [self.opt.frustum_size, self.opt.frustum_size, self.opt.n_samp]
@@ -208,6 +214,7 @@ class uorfEvalModel(BaseModel):
                         obj_idx = obj_idxs[kk, ...]  # 1xHxW
                     except IndexError:
                         break
+                    # st()
                     iou = (obj_idx & mask_idx_this_slot).type(torch.float).sum() / (obj_idx | mask_idx_this_slot).type(torch.float).sum()
                     iou_this_slot.append(iou)
                 target_obj_number = torch.tensor(iou_this_slot).argmax()
