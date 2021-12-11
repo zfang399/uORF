@@ -212,12 +212,18 @@ class uorfNoGanModel(BaseModel):
             self.obj_idxs = input['obj_idxs']  # NxKxHxW
 
 
-    def forward(self, epoch=0):
+    def forward(self, epoch=0, do_vis=False):
         """Run forward pass. This will be called by both functions <optimize_parameters> and <test>."""
         if not self.opt.no_mask:
             self.weight_percept = 0.0
         else:
             self.weight_percept = self.opt.weight_percept if epoch >= self.opt.percept_in else 0
+
+        if do_vis:
+            self.opt.sparse_nerf = False
+        else:
+            self.opt.sparse_nerf = True
+
         self.loss_recon = 0
         self.loss_perc = 0
         dev = self.x[0:1].device
@@ -254,7 +260,28 @@ class uorfNoGanModel(BaseModel):
             x = self.x[:, :, H_idx:H_idx + rs, W_idx:W_idx + rs]
             self.z_vals, self.ray_dir = z_vals, ray_dir
         
-        # st()
+        if self.opt.sparse_nerf:
+            # random subset of pixels, for now let's say all views and all objects use the same set of pixels
+            W, H, D = self.opt.frustum_size, self.opt.frustum_size, self.opt.n_samp
+            frus_nss_coor = frus_nss_coor.reshape(N, D, H, W, -1) # (N, D, H, W, 3)
+
+            n_sample = int(H*W*self.opt.sparse_ratio)
+            self.sparse_pix_idx = np.unravel_index(np.random.choice(H*W, n_sample, replace=False), (H, W))
+
+            frus_nss_coor = frus_nss_coor[:, :, self.sparse_pix_idx[0], self.sparse_pix_idx[1]] # (N, D, S, 3)
+            frus_nss_coor = frus_nss_coor.flatten(start_dim=0, end_dim=2) # (NxDxS), 3
+
+            z_vals_ = self.z_vals.view([N, H, W, D])
+            z_vals_ = z_vals_[..., self.sparse_pix_idx[0], self.sparse_pix_idx[1], :]
+            z_vals_ = z_vals_.flatten(0, 1)
+
+            ray_dir_ = self.ray_dir.view([N, H, W, 3])
+            ray_dir_ = ray_dir_[..., self.sparse_pix_idx[0], self.sparse_pix_idx[1], :]
+            ray_dir_ = ray_dir_.flatten(0, 1)
+
+            self.z_vals, self.ray_dir = z_vals_, ray_dir_
+
+            x = self.x[:, :, self.sparse_pix_idx[0], self.sparse_pix_idx[1]].permute(0,2,1)
 
         if self.opt.no_bkg:
             sampling_coor_fg = frus_nss_coor[None, ...].expand(K, -1, -1)  # (K-1)xPx3
@@ -263,6 +290,23 @@ class uorfNoGanModel(BaseModel):
             sampling_coor_fg = frus_nss_coor[None, ...].expand(K - 1, -1, -1)  # (K-1)xPx3
             sampling_coor_bg = frus_nss_coor  # Px3
             raws, masked_raws, unmasked_raws, masks = self.netDecoder(sampling_coor_bg, sampling_coor_fg, z_slots, nss2cam0)  # (NxDxHxW)x4, Kx(NxDxHxW)x4, Kx(NxDxHxW)x4, Kx(NxDxHxW)x1
+
+        if self.opt.sparse_nerf:
+            raws = raws.reshape(N, D, n_sample, 4).permute(0, 2, 1, 3).flatten(start_dim=0, end_dim=1) # (NxS)xDx4
+            masked_raws = masked_raws.view([K, N, D, n_sample, 4])
+            unmasked_raws = unmasked_raws.view([K, N, D, n_sample, 4])
+            rgb_map, _, _ = raw2outputs(raws, self.z_vals, self.ray_dir) # (NxS)x3
+
+            rendered = rgb_map.view(N, n_sample, 3) # (N, S, 3)
+            x_recon = rendered * 2 - 1
+
+            # for now, assume opt.learn_masked = False
+            if not self.opt.no_mask:
+                self.loss_recon = self.L2_loss(x_recon[:1, x[:1]])
+            else:
+                self.loss_recon = self.L2_loss(x_recon, x)
+
+            return
 
         W, H, D = self.opt.supervision_size, self.opt.supervision_size, self.opt.n_samp
         raws = raws.view([N, D, H, W, 4]).permute([0, 2, 3, 1, 4]).flatten(start_dim=0, end_dim=2)  # (NxHxW)xDx4
@@ -414,9 +458,33 @@ class uorfNoGanModel(BaseModel):
         loss.backward()
         self.loss_perc = self.loss_perc / self.weight_percept if self.weight_percept > 0 else self.loss_perc
 
-    def optimize_parameters(self, ret_grad=False, epoch=0):
+    def optimize_parameters(self, ret_grad=False, epoch=0, do_vis=False):
         """Update network weights; it will be called in every training iteration."""
-        self.forward(epoch)
+        avg_grads = []
+        layers = []
+        if not do_vis:
+            self.forward(epoch, do_vis)
+            for opm in self.optimizers:
+                opm.zero_grad()
+            self.backward()
+        else:
+            with torch.no_grad():
+                self.forward(epoch, do_vis)
+            self.opt.sparse_nerf = True
+
+        if ret_grad:
+            for n, p in chain(self.netEncoder.named_parameters(), self.netSlotAttention.named_parameters(), self.netDecoder.named_parameters()):
+                if p.grad is not None and "bias" not in n:
+                    with torch.no_grad():
+                        layers.append(n)
+                        avg_grads.append(p.grad.abs().mean().cpu().item())
+        for opm in self.optimizers:
+            opm.step()
+        return layers, avg_grads
+
+    def optimize_parameters_full(self, ret_grad=False, epoch=0):
+        """Update network weights; it will be called in every training iteration."""
+        self.forward(epoch, do_vis=True)
         for opm in self.optimizers:
             opm.zero_grad()
         self.backward()

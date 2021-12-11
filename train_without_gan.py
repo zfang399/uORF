@@ -52,7 +52,11 @@ if __name__ == '__main__':
             epoch_iter += opt.batch_size
             # st()
             model.set_input(data)         # unpack data from dataset and apply preprocessing
-            layers, avg_grad = model.optimize_parameters(opt.display_grad, epoch)   # calculate loss functions, get gradients, update network weights
+            if opt.sparse_nerf:
+                layers, avg_grad = model.optimize_parameters(opt.display_grad, epoch, (total_iters-1)%opt.display_freq==0 )   # calculate loss functions, get gradients, update network weights
+            else:
+                layers, avg_grad = model.optimize_parameters_full(opt.display_grad, epoch)
+
             if opt.custom_lr and opt.stage == 'coarse':
                 model.update_learning_rate()    # update learning rates at the beginning of every step
 

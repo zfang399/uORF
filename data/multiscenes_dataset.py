@@ -118,6 +118,7 @@ class MultiscenesDataset(BaseDataset):
         for path in filenames:
             # if self.opt.masked_rgb:    
             #     path = path.replace(".png","_masked.png")
+            path = os.path.join(self.opt.dataroot, path.split('/')[-1])
             img = Image.open(path).convert('RGB')
             img_data = self._transform(img)
             pose_path = path.replace('.png', '_RT.txt')
